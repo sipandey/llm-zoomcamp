@@ -24,7 +24,8 @@ class RAGBase:
         instructions=INSTRUCTIONS,
         prompt_template=PROMPT_TEMPLATE,
         course="llm-zoomcamp",
-        model="gpt-4o-mini"
+        model="gpt-4o-mini",
+        context_fields=None,
     ):
         self.index = index
         self.llm_client = llm_client
@@ -32,11 +33,14 @@ class RAGBase:
         self.course = course
         self.prompt_template = prompt_template
         self.model = model
+        self.context_fields = context_fields
 
-
-    def search(self, query, num_results=5):
-        boost_dict = {"question": 3.0, "section": 0.5}
-        filter_dict = {"course": self.course}
+    def search(self, query, num_results=5, boost_dict=None, filter_dict=None):
+        if boost_dict is None:
+            boost_dict = {"question": 3.0, "section": 0.5} if not self.context_fields else {}
+        
+        if filter_dict is None:
+            filter_dict = {"course": self.course} if not self.context_fields else {}
 
         return self.index.search(
             query,
@@ -49,12 +53,31 @@ class RAGBase:
         lines = []
 
         for doc in search_results:
-            lines.append(doc["section"])
-            lines.append("Q: " + doc["question"])
-            lines.append("A: " + doc["answer"])
-            lines.append("")
+            if self.context_fields:
+                formatted = self._format_generic_doc(doc)
+                if formatted:
+                    lines.append(formatted)
+                    lines.append("")
+                continue
+
+            if all(key in doc for key in ("section", "question", "answer")):
+                lines.append(str(doc.get("section", "")).strip())
+                lines.append("Q: " + str(doc.get("question", "")).strip())
+                lines.append("A: " + str(doc.get("answer", "")).strip())
+                lines.append("")
+                continue
+
 
         return "\n".join(lines).strip()
+
+    def _format_generic_doc(self, doc):
+        if self.context_fields:
+            parts = []
+            for field in self.context_fields:
+                if field in doc and doc[field] is not None:
+                    parts.append(f"{field.title()}: {doc[field]}")
+            if parts:
+                return "\n".join(parts)
 
     def build_prompt(self, query, search_results):
         context = self.build_context(search_results)
@@ -73,10 +96,13 @@ class RAGBase:
             input=input_messages
         )
 
-        return response.output_text
+        return {
+            "output_text": response.output_text,
+            "input_tokens": response.usage.input_tokens,
+        }
 
     def rag(self, query):
         search_results = self.search(query)
         prompt = self.build_prompt(query, search_results)
-        answer = self.llm(prompt)
-        return answer
+        llm_result = self.llm(prompt)
+        return llm_result
